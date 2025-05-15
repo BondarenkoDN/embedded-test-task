@@ -46,7 +46,7 @@ std::uniform_int_distribution<int> tempDist(20, 30); // Распределени
 
 
 
-/*ВСПОМОГАТЕЛЬНЫЕ ФНУКЦИИ*/
+/*ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ*/
 //Чтение переменных окружения
 std::string getEnvVar(const char* name, const char* defaultValue) 
 {
@@ -65,7 +65,6 @@ void publishError(const std::string& errorMessage)
         json error;
         error["error"] = errorMessage; // Сообщение об ошибке
         error["timestamp"] = std::chrono::system_clock::now().time_since_epoch().count(); // Метка времени
-        
         std::string payload = error.dump(); 
         mosquitto_publish(mosq, nullptr, "embedded/errors", payload.length(), payload.c_str(), 1, false); // QoS=1
     }
@@ -87,12 +86,11 @@ bool connectToMqtt()
     {
         mosquitto_username_pw_set(mosq, mqttUsername.c_str(), mqttPassword.c_str());
     }
-    
     // Подключение к брокеру
     int result = mosquitto_connect(mosq, mqttHost.c_str(), mqttPort, 60);
     if (result != MOSQ_ERR_SUCCESS) 
     {
-        std::cerr << "Unable to connect to MQTT broker: " << mosquitto_strerror(result) << std::endl;
+        publishError("Unable to connect to MQTT broker: " + std::string(mosquitto_strerror(result)));
         return false;
     }
     
@@ -102,7 +100,7 @@ bool connectToMqtt()
 }
 
 
-/*CALLBACK*/
+/*CALLBACKS*/
 
 // Callback для подключения к MQTT
 void connect_callback(struct mosquitto *mosq, void *obj, int result) 
@@ -112,12 +110,11 @@ void connect_callback(struct mosquitto *mosq, void *obj, int result)
         std::cout << "Successfully connected to MQTT broker" << std::endl;
         isConnected = true;
         reconnectAttempts = 0;
-        
-        // Подписываемся на топик после подключения
+
         int rc = mosquitto_subscribe(mosq, nullptr, "embedded/control", 0);
         if (rc != MOSQ_ERR_SUCCESS) 
         {
-            std::cerr << "Failed to subscribe to topic: " << mosquitto_strerror(rc) << std::endl;
+            publishError("Failed to connect: " + std::string(mosquitto_strerror(result)));
         } 
         else 
         {
@@ -126,7 +123,7 @@ void connect_callback(struct mosquitto *mosq, void *obj, int result)
     } 
     else 
     {
-        std::cerr << "Failed to connect to MQTT broker: " << mosquitto_strerror(result) << std::endl;
+        publishError("Failed to connect to MQTT broker: " + std::string(mosquitto_strerror(result)));
         isConnected = false;
     }
 }
@@ -136,69 +133,6 @@ void disconnect_callback(struct mosquitto *mosq, void *obj, int result)
 {
     std::cout << "Disconnected from MQTT broker" << std::endl;
     isConnected = false;
-}
-
-
-/*ФУНКЦИИ ДЛЯ РАБОТЫ С GPIO*/
-// ЦИФРОВЫЕ ПИНЫ
-// Функция для установки режима пина (вход/выход)
-void pinMode(uint8_t pin, bool isOutput) 
-{
-    std::cout << "Pin " << (int)pin << " set to " << (isOutput ? "OUTPUT" : "INPUT") << std::endl;
-    pinStates[pin] = false; // Инициализация состояния пина
-}
-
-// Функция для чтения значения с пина
-bool digitalRead(uint8_t pin)
-{
-    if (pinStates.find(pin) == pinStates.end()) 
-    {
-        publishError("Attempt to read from uninitialized pin: " + std::to_string(pin));
-        return false;
-    }
-    std::cout << "Reading from pin " << (int)pin << ": " << (pinStates[pin] ? "HIGH" : "LOW") << std::endl;
-    return pinStates[pin];
-}
-
-// Функция для записи значения на пин
-void digitalWrite(uint8_t pin, bool value) {
-    std::cout << "Writing to pin " << (int)pin << ": " << (value ? "HIGH" : "LOW") << std::endl;
-    pinStates[pin] = value;
-    
-    // Отправляем состояние пина в MQTT только если подключены
-    if (mosq && isConnected) {
-        json message;
-        message["pin"] = pin;
-        message["value"] = value;
-        std::string payload = message.dump();
-        
-        std::cout << "Publishing MQTT message to topic 'embedded/pins/state': " << payload << std::endl;
-        
-        // Добавляем обработку ошибок и повторные попытки публикации
-        int retries = 3;
-        while (retries > 0) {
-            int rc = mosquitto_publish(mosq, nullptr, "embedded/pins/state", payload.length(), payload.c_str(), 1, false); // QoS=1 для гарантированной доставки
-            if (rc == MOSQ_ERR_SUCCESS) {
-                std::cout << "Successfully published MQTT message" << std::endl;
-                
-                // Важно: нужно вызвать mosquitto_loop для обработки исходящих сообщений
-                mosquitto_loop(mosq, 100, 1); // Даем время на обработку сообщения
-                break;
-            } else if (rc == MOSQ_ERR_NO_CONN) {
-                std::cerr << "No connection to broker, attempting to reconnect..." << std::endl;
-                if (connectToMqtt()) {
-                    mosquitto_loop(mosq, 100, 1);
-                }
-            } else {
-                std::cerr << "Failed to publish MQTT message: " << mosquitto_strerror(rc) << std::endl;
-            }
-            retries--;
-            if (retries > 0) {
-                std::cout << "Retrying publish... (" << retries << " attempts left)" << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        }
-    }
 }
 
 // Callback для получения сообщений MQTT
@@ -232,6 +166,87 @@ void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_
         std::cerr << "Error parsing JSON: " << e.what() << std::endl;
     }
 }
+
+
+
+
+
+/*ФУНКЦИИ ДЛЯ РАБОТЫ С GPIO*/
+// ЦИФРОВЫЕ ПИНЫ
+// Функция для установки режима пина (вход/выход)
+void pinMode(uint8_t pin, bool isOutput) 
+{
+    std::cout << "Pin " << (int)pin << " set to " << (isOutput ? "OUTPUT" : "INPUT") << std::endl;
+    pinStates[pin] = false; // Инициализация состояния пина
+}
+
+// Функция для чтения значения с пина. 
+/*pinStates.end() возвращает итератор, указывающий на "конец" контейнера (несуществующий элемент)
+Условие find(pin) == end() означает, что пин не найден в pinStates (т.е. не был инициализирован через pinMode)*/
+bool digitalRead(uint8_t pin)
+{
+    if (pinStates.find(pin) == pinStates.end()) 
+    {
+        publishError("Attempt to read from uninitialized pin: " + std::to_string(pin));
+        return false;
+    }
+    std::cout << "Reading from pin " << (int)pin << ": " << (pinStates[pin] ? "HIGH" : "LOW") << std::endl;
+    return pinStates[pin];
+}
+
+// Функция для записи значения на пин
+void digitalWrite(uint8_t pin, bool value) 
+{
+    if (pinStates.find(pin) == pinStates.end()) 
+    {
+        publishError("Attempt to write to uninitialized pin: " + std::to_string(pin));
+        return;
+    }
+    std::cout << "Writing to pin " << (int)pin << ": " << (value ? "HIGH" : "LOW") << std::endl;
+    pinStates[pin] = value;
+    
+    // Отправляем состояние пина в MQTT только если подключены
+    if (mosq && isConnected) {
+        json message;
+        message["pin"] = pin;
+        message["value"] = value;
+        std::string payload = message.dump();
+        
+        std::cout << "Publishing MQTT message to topic 'embedded/pins/state': " << payload << std::endl;
+        
+        // Добавляем обработку ошибок и повторные попытки публикации
+        int retries = 3;
+        while (retries > 0) {
+            int rc = mosquitto_publish(mosq, nullptr, "embedded/pins/state", payload.length(), payload.c_str(), 1, false); // QoS=1 для гарантированной доставки
+            if (rc == MOSQ_ERR_SUCCESS) 
+            {
+                std::cout << "Successfully published MQTT message" << std::endl;
+                // Важно: нужно вызвать mosquitto_loop для обработки исходящих сообщений
+                mosquitto_loop(mosq, 100, 1); // Даем время на обработку сообщения
+                break;
+            }
+            else if (rc == MOSQ_ERR_NO_CONN) 
+            {
+                publishError("No connection to broker, attempting to reconnect...");
+                if (connectToMqtt()) 
+                {
+                    mosquitto_loop(mosq, 100, 1);
+                }
+            } 
+            else
+            {
+                publishError("Failed to publish MQTT message:" + std::string(mosquitto_strerror(rc)));
+            }
+            retries--;
+            if (retries > 0) {
+                std::cout << "Retrying publish... (" << retries << " attempts left)" << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+    }
+}
+
+
 
 // Функция setup - выполняется один раз при старте
 void setup() {
