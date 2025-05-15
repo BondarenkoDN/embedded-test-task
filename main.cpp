@@ -51,6 +51,10 @@ std::map<uint8_t, std::chrono::steady_clock::time_point> lastPwmToggleTime;
 // Период ШИМ (в микросекундах)
 constexpr uint16_t PWM_PERIOD = 1000; // 1 мс (частота ~1 кГц)
 
+
+
+
+
 /*ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ*/
 //Чтение переменных окружения
 std::string getEnvVar(const char* name, const char* defaultValue) 
@@ -58,6 +62,7 @@ std::string getEnvVar(const char* name, const char* defaultValue)
     const char* value = std::getenv(name); // Пытаемся прочитать переменную
     return value ? value : defaultValue;   // Если не найдена — возвращаем значение по умолчанию
 }
+
 
 
  /*ФУНКЦИИ ДЛЯ РАБОТЫ С MQTT */
@@ -105,6 +110,9 @@ bool connectToMqtt()
 }
 
 
+
+
+
 /*CALLBACKS*/
 
 // Callback для подключения к MQTT
@@ -141,8 +149,10 @@ void disconnect_callback(struct mosquitto *mosq, void *obj, int result)
 }
 
 // Callback для получения сообщений MQTT
-void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message) {
-    if (!message->payload) {
+void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message) 
+{
+    if (!message->payload) 
+    {
         std::cout << "Received empty message" << std::endl;
         return;
     }
@@ -152,26 +162,40 @@ void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_
     
     std::cout << "Received message on topic: " << topic << ", payload: " << payload << std::endl;
     
-    try {
+    try 
+    {
         json data = json::parse(payload);
         
-        if (topic == "embedded/control") {
-            if (data.contains("command")) {
+        if (topic == "embedded/control") 
+        {
+            if (data.contains("command")) 
+            {
                 std::string command = data["command"];
-                if (command == "restart") {
+                if (command == "restart") 
+                {
                     std::cout << "Received restart command" << std::endl;
                     // Изменяем состояние пина 2 перед перезапуском
                     bool currentState = digitalRead(2);
                     digitalWrite(2, !currentState); // Инвертируем текущее состояние
                     shouldRestart = true;
                 }
+                else if (command == "set_rgb") // Валидация и установка RGB
+                {
+                    if (!data.contains("red") || !data.contains("green") || !data.contains("blue")) 
+                    {
+                        publishError("Invalid RGB command");
+                        return;
+                    }
+                    setRGB_digital(data["red"], data["green"], data["blue"]);
+                }
             }
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Error parsing JSON: " << e.what() << std::endl;
+    } 
+    catch (const std::exception& e)
+    {
+        publishError("JSON parse error: " + std::string(e.what()));
     }
 }
-
 
 
 
@@ -250,6 +274,8 @@ void digitalWrite(uint8_t pin, bool value)
         }
     }
 }
+
+
 // АНАЛОГОВЫЕ ПИНЫ
 // Функция чтения значения с пина
 int analogRead(uint8_t pin) 
@@ -281,32 +307,41 @@ void analogWrite(uint8_t pin, uint8_t value)
     lastPwmToggleTime[pin] = std::chrono::steady_clock::now(); // Сбрасываем таймер
 }
 
+
+
 // УПРАВЛЕНИЕ RGB И ТЕМПЕРАТУРОЙ
-// ВКЛЮЧЕНИЕ СВЕТОДИОДА 
-void setRGB_digital(uint8_t red, uint8_t green, uint8_t blue) {
+// ВКЛЮЧЕНИЕ СВЕТОДИОДА. Два состояния вкл\выкл
+void setRGB_digital(uint8_t red, uint8_t green, uint8_t blue) 
+{
     // если значение >127 — включаем пин
     digitalWrite(RED_PIN, red > 127);
     digitalWrite(GREEN_PIN, green > 127);
     digitalWrite(BLUE_PIN, blue > 127);
     
     // Публикация подтверждения
-    if (mosq && isConnected) {
+    if (mosq && isConnected) 
+    {
         json message;
+        message["command"] = "set_rgb";
         message["red"] = red;
         message["green"] = green;
         message["blue"] = blue;
         mosquitto_publish(mosq, nullptr, "embedded/pins/state", message.dump().length(), message.dump().c_str(), 1, false);
     }
 }
+
 // ФУНКЦИЯ НА СЛУЧАЙ НЕОБХОДИМОСТИ УПРАВЛЕНИЯ ЯРКОСТЬЮ СВЕТОДИОДА  
-void setRGB_analog(uint8_t red, uint8_t green, uint8_t blue) {
+void setRGB_analog(uint8_t red, uint8_t green, uint8_t blue) 
+{
     analogWrite(RED_PIN, red );
     analogWrite(GREEN_PIN, green );
     analogWrite(BLUE_PIN, blue);
     
     // Публикация подтверждения
-    if (mosq && isConnected) {
+    if (mosq && isConnected) 
+    {
         json message;
+        message["command"] = "set_rgb";
         message["red"] = red;
         message["green"] = green;
         message["blue"] = blue;
@@ -315,15 +350,31 @@ void setRGB_analog(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 
+// ПУБЛИКАЦИЯ ТЕМПЕРАТУРЫ
+void publishTemperature() 
+{
+    int temperature = tempDist(rng); // Генерация случайной температуры (20-30°C)
+    analogPinValues[TEMPERATURE_PIN] = temperature; // Сохраняем значение
+    
+    if (mosq && isConnected) 
+    {
+        json message;
+        message["pin"] = TEMPERATURE_PIN;
+        message["temperature"] = temperature;
+        mosquitto_publish(mosq, nullptr, "embedded/sensors/temperature", message.dump().length(), message.dump().c_str(), 1, false);
+    }
+}
+
 // Функция setup - выполняется один раз при старте
-void setup() {
+void setup() 
+{
     std::cout << "Setup started" << std::endl;
     
-    // Инициализация MQTT
-    mosquitto_lib_init();
-    mosq = mosquitto_new("embedded-controller", true, nullptr);
-    if (!mosq) {
-        std::cerr << "Error: Out of memory." << std::endl;
+    mosquitto_lib_init();// Инициализация MQTT
+    mosq = mosquitto_new("embedded-controller", true, nullptr);// Создание клиента
+    if (!mosq)
+    {
+        publishError("Error: Out of memory." );
         return;
     }
     
@@ -335,9 +386,13 @@ void setup() {
     // Настройка пинов
     pinMode(13, true);  // Пин 13 как выход
     pinMode(2, false);  // Пин 2 как вход
+    pinMode(RED_PIN, true);   // RGB
+    pinMode(GREEN_PIN, true);
+    pinMode(BLUE_PIN, true);
     
     // Попытка первоначального подключения
-    if (connectToMqtt()) {
+    if (connectToMqtt()) 
+    {
         std::cout << "Initial MQTT connection successful" << std::endl;
     }
     
@@ -345,36 +400,52 @@ void setup() {
 }
 
 // Функция loop - выполняется циклически
-void loop() {
+void loop() 
+{
     static bool ledState = false;
     static auto lastMqttTime = std::chrono::steady_clock::now();
     static auto lastReconnectAttempt = std::chrono::steady_clock::now();
     
-    // Проверка подключения и попытка реконнекта
-    if (!isConnected) {
+    if (!isConnected )  // Проверка подключения и попытка реконнекта
+    {
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastReconnectAttempt).count() >= RECONNECT_DELAY) {
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastReconnectAttempt).count() >= RECONNECT_DELAY) 
+        {
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) 
+            {
                 std::cout << "Attempting to reconnect to MQTT broker (attempt " << (reconnectAttempts + 1) << ")" << std::endl;
-                if (connectToMqtt()) {
+                if (connectToMqtt()) 
+                {
                     lastReconnectAttempt = now;
                     reconnectAttempts++;
                 }
-            } else {
-                std::cerr << "Max reconnection attempts reached. Giving up." << std::endl;
+            } 
+            else 
+            {
+                 publishError("Max reconnection attempts reached. Giving up." );
             }
         }
     }
     
     // Обработка MQTT сообщений с задержкой
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMqttTime).count() >= MQTT_LOOP_DELAY) {
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMqttTime).count() >= MQTT_LOOP_DELAY) 
+    {
         int rc = mosquitto_loop(mosq, 0, 1);
-        if (rc != MOSQ_ERR_SUCCESS) {
-            std::cerr << "MQTT loop error: " << mosquitto_strerror(rc) << std::endl;
+        if (rc != MOSQ_ERR_SUCCESS) 
+        {
+            publishError("MQTT loop error:" + std::string(mosquitto_strerror(rc)));
             isConnected = false;
         }
         lastMqttTime = now;
+    }
+    
+    // Публикация температуры каждые 5 секунд
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTemperaturePublishTime).count() >= TEMPERATURE_PUBLISH_INTERVAL) 
+    {
+        publishTemperature();
+        lastTemperaturePublishTime = now;
     }
     
     // Если получена команда перезапуска
@@ -391,11 +462,12 @@ void loop() {
     bool buttonState = digitalRead(2);
     
     // Если кнопка нажата (пин 2 в HIGH), переключаем светодиод
-    if (buttonState) {
+    if (buttonState) 
+    {
         ledState = !ledState;
         digitalWrite(13, ledState);
     }
-    
+
     // Задержка основного цикла
     std::this_thread::sleep_for(std::chrono::milliseconds(MAIN_LOOP_DELAY));
 }
