@@ -1,16 +1,23 @@
-#include <iostream>
-#include <map>
-#include <cstdint>
-#include <string>
-#include <cstring>
-#include <mosquitto.h>
-#include <nlohmann/json.hpp>
+/*ЗАГОЛОВОЧНЫЕ ФАЙЛЫ И ПРОСТРАНСТВА ИМЕН*/
 
-#include <chrono>
-#include <thread>
-#include <cstdlib>
+#include <iostream>       // Для ввода/вывода
+#include <map>           // Для использования std::map (хранение состояний пинов)
+#include <cstdint>       // Для uint8_t (беззнаковый 8-битный тип)
+#include <string>        // Для работы со строками
+#include <cstring>       // Для работы с C-строками (используется в MQTT)
+#include <mosquitto.h>   // Библиотека MQTT (mosquitto)
+#include <nlohmann/json.hpp> // Для работы с JSON
+#include <chrono>        // Для работы со временем (задержки, интервалы)
+#include <thread>        // Для std::this_thread::sleep_for
+#include <cstdlib>       // Для std::getenv (чтение переменных окружения)
+#include <random>        // Для генерации случайных чисел (температура)
+#include <ctime>         // Для std::time (инициализация генератора случайных чисел)
 
-using json = nlohmann::json;
+using json = nlohmann::json; // Упрощение работы с JSON
+
+
+
+/*КОНСТАНТЫ И ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ*/
 
 // Константы для задержек (в миллисекундах)
 constexpr int MAIN_LOOP_DELAY = 100;    // 100ms задержка основного цикла
@@ -18,81 +25,137 @@ constexpr int MQTT_LOOP_DELAY = 10;     // 10ms задержка для обра
 constexpr int RECONNECT_DELAY = 5000;   // 5s задержка между попытками реконнекта
 constexpr int MAX_RECONNECT_ATTEMPTS = 10; // Максимальное количество попыток реконнекта
 
-// Эмуляция состояния пинов
-std::map<uint8_t, bool> pinStates;
-struct mosquitto *mosq = nullptr;
-bool shouldRestart = false;
-bool isConnected = false;
-int reconnectAttempts = 0;
+// Номера пинов для RGB и датчика температуры
+constexpr uint8_t RED_PIN = 3;       // Пин для красного цвета
+constexpr uint8_t GREEN_PIN = 5;     // Пин для зеленого цвета
+constexpr uint8_t BLUE_PIN = 6;      // Пин для синего цвета
+constexpr uint8_t TEMPERATURE_PIN = A0; // Аналоговый пин для температуры (A0)
 
-// Получение переменных окружения с значениями по умолчанию
-std::string getEnvVar(const char* name, const char* defaultValue) {
-    const char* value = std::getenv(name);
-    return value ? value : defaultValue;
+// Глобальные переменные
+std::map<uint8_t, bool> pinStates;      // Состояния цифровых пинов (HIGH/LOW)
+std::map<uint8_t, int> analogPinValues; // Состояния аналоговых пинов (например, A0)
+struct mosquitto *mosq = nullptr;       // Указатель на MQTT-клиент
+bool shouldRestart = false;             // Флаг перезагрузки
+bool isConnected = false;               // Флаг подключения к MQTT
+int reconnectAttempts = 0;              // Счетчик попыток переподключения
+auto lastTemperaturePublishTime = std::chrono::steady_clock::now(); // Время последней публикации температуры
+
+// Генератор случайных чисел (для температуры 20-30°C)
+std::mt19937 rng(std::time(nullptr)); // Инициализация генератора
+std::uniform_int_distribution<int> tempDist(20, 30); // Распределение 20-30
+
+
+
+/*ВСПОМОГАТЕЛЬНЫЕ ФНУКЦИИ*/
+//Чтение переменных окружения
+std::string getEnvVar(const char* name, const char* defaultValue) 
+{
+    const char* value = std::getenv(name); // Пытаемся прочитать переменную
+    return value ? value : defaultValue;   // Если не найдена — возвращаем значение по умолчанию
 }
 
-// Функция для подключения к MQTT
-bool connectToMqtt() {
-    // Получение учетных данных из переменных окружения
+
+ /*ФУНКЦИИ ДЛЯ РАБОТЫ С MQTT */
+
+//Публикация ошибок в MQTT
+void publishError(const std::string& errorMessage) 
+{
+    if (mosq && isConnected) // Если MQTT подключен
+    { 
+        json error;
+        error["error"] = errorMessage; // Сообщение об ошибке
+        error["timestamp"] = std::chrono::system_clock::now().time_since_epoch().count(); // Метка времени
+        
+        std::string payload = error.dump(); 
+        mosquitto_publish(mosq, nullptr, "embedded/errors", payload.length(), payload.c_str(), 1, false); // QoS=1
+    }
+    std::cerr << "ERROR: " << errorMessage << std::endl; // Логирование в консоль
+}
+
+// Функция для подключения к брокеру MQTT
+bool connectToMqtt() 
+{
+    // Чтение настроек из переменных окружения
     std::string mqttHost = getEnvVar("MQTT_HOST", "localhost");
     int mqttPort = std::stoi(getEnvVar("MQTT_PORT", "1883"));
     std::string mqttUsername = getEnvVar("MQTT_USERNAME", "");
     std::string mqttPassword = getEnvVar("MQTT_PASSWORD", "");
-    
     std::cout << "Connecting to MQTT broker at " << mqttHost << ":" << mqttPort << std::endl;
     
     // Установка учетных данных
-    if (!mqttUsername.empty() && !mqttPassword.empty()) {
+    if (!mqttUsername.empty() && !mqttPassword.empty()) 
+    {
         mosquitto_username_pw_set(mosq, mqttUsername.c_str(), mqttPassword.c_str());
     }
     
     // Подключение к брокеру
     int result = mosquitto_connect(mosq, mqttHost.c_str(), mqttPort, 60);
-    if (result != MOSQ_ERR_SUCCESS) {
+    if (result != MOSQ_ERR_SUCCESS) 
+    {
         std::cerr << "Unable to connect to MQTT broker: " << mosquitto_strerror(result) << std::endl;
         return false;
     }
     
     // Добавляем начальную синхронизацию после подключения
     mosquitto_loop(mosq, 100, 1);
-    
     return true;
 }
 
+
+/*CALLBACK*/
+
 // Callback для подключения к MQTT
-void connect_callback(struct mosquitto *mosq, void *obj, int result) {
-    if (result == MOSQ_ERR_SUCCESS) {
+void connect_callback(struct mosquitto *mosq, void *obj, int result) 
+{
+    if (result == MOSQ_ERR_SUCCESS) 
+    {
         std::cout << "Successfully connected to MQTT broker" << std::endl;
         isConnected = true;
         reconnectAttempts = 0;
         
         // Подписываемся на топик после подключения
         int rc = mosquitto_subscribe(mosq, nullptr, "embedded/control", 0);
-        if (rc != MOSQ_ERR_SUCCESS) {
+        if (rc != MOSQ_ERR_SUCCESS) 
+        {
             std::cerr << "Failed to subscribe to topic: " << mosquitto_strerror(rc) << std::endl;
-        } else {
+        } 
+        else 
+        {
             std::cout << "Successfully subscribed to embedded/control" << std::endl;
         }
-    } else {
+    } 
+    else 
+    {
         std::cerr << "Failed to connect to MQTT broker: " << mosquitto_strerror(result) << std::endl;
         isConnected = false;
     }
 }
 
 // Callback для отключения от MQTT
-void disconnect_callback(struct mosquitto *mosq, void *obj, int result) {
+void disconnect_callback(struct mosquitto *mosq, void *obj, int result) 
+{
     std::cout << "Disconnected from MQTT broker" << std::endl;
     isConnected = false;
 }
 
+
+/*ФУНКЦИИ ДЛЯ РАБОТЫ С GPIO*/
+// ЦИФРОВЫЕ ПИНЫ
 // Функция для установки режима пина (вход/выход)
-void pinMode(uint8_t pin, bool isOutput) {
+void pinMode(uint8_t pin, bool isOutput) 
+{
     std::cout << "Pin " << (int)pin << " set to " << (isOutput ? "OUTPUT" : "INPUT") << std::endl;
     pinStates[pin] = false; // Инициализация состояния пина
 }
 
 // Функция для чтения значения с пина
-bool digitalRead(uint8_t pin) {
+bool digitalRead(uint8_t pin)
+{
+    if (pinStates.find(pin) == pinStates.end()) 
+    {
+        publishError("Attempt to read from uninitialized pin: " + std::to_string(pin));
+        return false;
+    }
     std::cout << "Reading from pin " << (int)pin << ": " << (pinStates[pin] ? "HIGH" : "LOW") << std::endl;
     return pinStates[pin];
 }
