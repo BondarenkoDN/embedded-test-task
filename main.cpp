@@ -186,8 +186,25 @@ void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_
                         publishError("Invalid RGB command");
                         return;
                     }
+                    int red = data["red"];
+                    int green = data["green"];
+                    int blue = data["blue"];
+                    
+                    if (red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 || blue > 255) 
+                    {
+                        publishError("Invalid RGB values: values must be between 0 and 255");
+                        return;
+                    }
                     setRGB_digital(data["red"], data["green"], data["blue"]);
                 }
+                else 
+                {
+                    publishError("Unknown command received: " + command);
+                }
+            }
+            else 
+            {
+                publishError("Received message without command field");
             }
         }
     } 
@@ -310,7 +327,7 @@ void analogWrite(uint8_t pin, uint8_t value)
 
 
 // УПРАВЛЕНИЕ RGB И ТЕМПЕРАТУРОЙ
-// ВКЛЮЧЕНИЕ СВЕТОДИОДА. Два состояния вкл\выкл
+// фУНКЦИЯ ЕСЛИ НЕОБХОДИМО ВСЕГО ДВА СОСТОЯНИЯ СВЕТОДИОДА - ВКЛ\ВЫКЛ
 void setRGB_digital(uint8_t red, uint8_t green, uint8_t blue) 
 {
     // если значение >127 — включаем пин
@@ -365,7 +382,9 @@ void publishTemperature()
     }
 }
 
-// Функция setup - выполняется один раз при старте
+
+
+// ФУНКЦИЯ SETUP
 void setup() 
 {
     std::cout << "Setup started" << std::endl;
@@ -386,7 +405,8 @@ void setup()
     // Настройка пинов
     pinMode(13, true);  // Пин 13 как выход
     pinMode(2, false);  // Пин 2 как вход
-    pinMode(RED_PIN, true);   // RGB
+    // Настройка пинов RGB светодиода
+    pinMode(RED_PIN, true);   
     pinMode(GREEN_PIN, true);
     pinMode(BLUE_PIN, true);
     
@@ -399,7 +419,8 @@ void setup()
     std::cout << "Setup completed" << std::endl;
 }
 
-// Функция loop - выполняется циклически
+
+// LOOP
 void loop() 
 {
     static bool ledState = false;
@@ -449,7 +470,8 @@ void loop()
     }
     
     // Если получена команда перезапуска
-    if (shouldRestart) {
+    if (shouldRestart) 
+    {
         std::cout << "Restarting..." << std::endl;
         std::cout << "Waiting 3 seconds before restart..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -472,16 +494,19 @@ void loop()
     std::this_thread::sleep_for(std::chrono::milliseconds(MAIN_LOOP_DELAY));
 }
 
-int main() {
+int main() 
+{
     setup();
     
     // Эмуляция бесконечного цикла
-    while (true) {
+    while (true) 
+    {
         loop();
     }
     
     // Очистка MQTT
-    if (mosq) {
+    if (mosq) 
+    {
         mosquitto_disconnect(mosq);
         mosquitto_destroy(mosq);
     }
