@@ -44,7 +44,12 @@ auto lastTemperaturePublishTime = std::chrono::steady_clock::now(); // Врем�
 std::mt19937 rng(std::time(nullptr)); // Инициализация генератора
 std::uniform_int_distribution<int> tempDist(20, 30); // Распределение 20-30
 
-
+// Текущие значения ШИМ для яркости каждого пина (0-255)
+std::map<uint8_t, uint8_t> pwmValues; 
+// Время последнего изменения состояния для каждого пина
+std::map<uint8_t, std::chrono::steady_clock::time_point> lastPwmToggleTime;
+// Период ШИМ (в микросекундах)
+constexpr uint16_t PWM_PERIOD = 1000; // 1 мс (частота ~1 кГц)
 
 /*ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ*/
 //Чтение переменных окружения
@@ -245,7 +250,69 @@ void digitalWrite(uint8_t pin, bool value)
         }
     }
 }
+// АНАЛОГОВЫЕ ПИНЫ
+// Функция чтения значения с пина
+int analogRead(uint8_t pin) 
+{
+    if (analogPinValues.find(pin) == analogPinValues.end()) 
+    {
+        publishError("Attempt to read from uninitialized analog pin: " + std::to_string(pin));
+        return 0;
+    }
+    return analogPinValues[pin]; // Возвращаем значение (например, температуру)
+}
 
+// Функция для записи значения яркости светодиода
+void analogWrite(uint8_t pin, uint8_t value) 
+{
+    if (pin != RED_PIN && pin != GREEN_PIN && pin != BLUE_PIN)
+    {
+        publishError("analogWrite: pin " + std::to_string(pin) + " does not support PWM");
+        return;
+    }
+
+    if (value > 255) 
+    {
+        publishError("analogWrite: value " + std::to_string(value) + " out of range (0-255)");
+        value = 255; // Ограничиваем максимумом
+    }
+
+    pwmValues[pin] = value; // Сохраняем значение
+    lastPwmToggleTime[pin] = std::chrono::steady_clock::now(); // Сбрасываем таймер
+}
+
+// УПРАВЛЕНИЕ RGB И ТЕМПЕРАТУРОЙ
+// ВКЛЮЧЕНИЕ СВЕТОДИОДА 
+void setRGB_digital(uint8_t red, uint8_t green, uint8_t blue) {
+    // если значение >127 — включаем пин
+    digitalWrite(RED_PIN, red > 127);
+    digitalWrite(GREEN_PIN, green > 127);
+    digitalWrite(BLUE_PIN, blue > 127);
+    
+    // Публикация подтверждения
+    if (mosq && isConnected) {
+        json message;
+        message["red"] = red;
+        message["green"] = green;
+        message["blue"] = blue;
+        mosquitto_publish(mosq, nullptr, "embedded/pins/state", message.dump().length(), message.dump().c_str(), 1, false);
+    }
+}
+// ФУНКЦИЯ НА СЛУЧАЙ НЕОБХОДИМОСТИ УПРАВЛЕНИЯ ЯРКОСТЬЮ СВЕТОДИОДА  
+void setRGB_analog(uint8_t red, uint8_t green, uint8_t blue) {
+    analogWrite(RED_PIN, red );
+    analogWrite(GREEN_PIN, green );
+    analogWrite(BLUE_PIN, blue);
+    
+    // Публикация подтверждения
+    if (mosq && isConnected) {
+        json message;
+        message["red"] = red;
+        message["green"] = green;
+        message["blue"] = blue;
+        mosquitto_publish(mosq, nullptr, "embedded/pins/state", message.dump().length(), message.dump().c_str(), 1, false);
+    }
+}
 
 
 // Функция setup - выполняется один раз при старте
